@@ -1,0 +1,32 @@
+{
+    "C_Cpp.errorSquiggles": "disabled",
+    "C_Cpp.default.compilerArgs": [
+        "-nostdinc"
+    ],
+    "C_Cpp.default.systemIncludePath" : [],
+    "files.associations": {
+        "*.js": "javascriptreact",
+        "hal_types.h": "c",
+        "hal_drivers.h": "c",
+        "hal_key.h": "c",
+        "hal_board.h": "c",
+        "osal_memory.h": "c",
+        "osal_tasks.h": "c",
+        "hal_uart.h": "c",
+        "iosfwd": "c",
+        "xstring": "c",
+        "regex": "c",
+        "xlocale": "c",
+        "hiddev.h": "c",
+        "scanparamservice.h": "c",
+        "hidkbmservice.h": "c",
+        "bcomdef.h": "c",
+        "comdef.h": "c",
+        "gatt.h": "c",
+        "gatt_profile_uuid.h": "c",
+        "osal.h": "c",
+        "gapgattserver.h": "c",
+        "gattservapp.h": "c",
+        "*.c_": "c"
+    }
+}

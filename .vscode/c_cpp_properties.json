@@ -1,0 +1,36 @@
+{
+    "configurations": [
+        {
+            "name": "Win32",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "C:\\Program Files (x86)\\IAR Systems\\Embedded Workbench 8.3\\8051\\inc\\**",
+                "C:\\Program Files (x86)\\Texas Instruments\\BLE-CC254x-1.5.0.16\\Components\\**",
+                "C:\\Program Files (x86)\\Texas Instruments\\BLE-CC254x-1.5.0.16\\Projects\\ble\\**"
+            ],
+            "defines": [
+                "_DEBUG",
+                "UNICODE",
+                "_UNICODE",
+                "__IAR_SYSTEMS_ICC__",
+                "CC2541",
+                "HAL_UART_ISR=2",
+                "__sfr=",
+                "__no_init=",
+                "__interrupt=",
+                "@="
+            ],
+            "cStandard": "c17",
+            "intelliSenseMode": "windows-msvc-x64",
+            "compilerPath": "",
+            "compilerArgs": [
+                "/wd7",
+                "-nostdinc"
+            ],
+            "browse": {
+                "limitSymbolsToIncludedHeaders": true
+            }
+        }
+    ],
+    "version": 4
+}
