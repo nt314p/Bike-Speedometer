@@ -12,7 +12,7 @@
 /* HCI */
 #include "hci_tl.h"
 
-#if defined OSAL_CBTIMER_NUM_TASKS
+#ifdef OSAL_CBTIMER_NUM_TASKS
 #include "osal_cbtimer.h"
 #endif
 
@@ -32,7 +32,6 @@
 /* Profiles */
 #include "peripheral.h"
 
-
 /* Application */
 #include "speedometer.h"
 
@@ -46,7 +45,7 @@ const pTaskEventHandlerFn tasksArr[] =
   LL_ProcessEvent,                                                  // task 0
   Hal_ProcessEvent,                                                 // task 1
   HCI_ProcessEvent,                                                 // task 2
-#if defined ( OSAL_CBTIMER_NUM_TASKS )
+#ifdef OSAL_CBTIMER_NUM_TASKS
   OSAL_CBTIMER_PROCESS_EVENT(osal_CbTimerProcessEvent),             // task 3
 #endif
   L2CAP_ProcessEvent,                                               // task 4

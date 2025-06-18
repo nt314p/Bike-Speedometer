@@ -27,6 +27,7 @@
         "osal.h": "c",
         "gapgattserver.h": "c",
         "gattservapp.h": "c",
-        "*.c_": "c"
+        "*.c_": "c",
+        "hal_sleep.h": "c"
     }
 }

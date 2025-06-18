@@ -27,9 +27,7 @@ int main()
 
     InitBoard(OB_READY);
 
-    //osal_pwrmgr_device(PWRMGR_ALWAYS_ON);
-
-#if defined (POWER_SAVING)
+#if defined POWER_SAVING
     osal_pwrmgr_device(PWRMGR_BATTERY);
 #endif
 

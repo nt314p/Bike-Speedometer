@@ -14,9 +14,11 @@
 #include "battservice.h"
 #include "hal_types.h"
 #include "hal_uart.h"
+#include "hal_sleep.h"
 
 #define DEVICE_INIT_EVENT 1 << 0
 #define PERIODIC_EVENT 1 << 1
+#define DEVICE_TIMEOUT_EVENT 1 << 2
 
 #define DEVICE_NAME_LEN 16
 static uint8 deviceName[DEVICE_NAME_LEN] = "Bike Speedometer";
@@ -41,6 +43,8 @@ static uint8 scanResponse[] =
 // https://www.bluetooth.com/wp-content/uploads/Files/Specification/Assigned_Numbers.html#bookmark49
 #define GAP_APPEARE_GENERIC_CYCLING 0x0480
 
+#define APP_DATA_INDEX 11
+
 // Advertising devices send out advertising packets to Central devices.
 // This packet contains flags, appearance, and service UUID data.
 static uint8 advertisingData[] =
@@ -48,7 +52,7 @@ static uint8 advertisingData[] =
     // flags
     0x02,
     GAP_ADTYPE_FLAGS,
-    GAP_ADTYPE_FLAGS_GENERAL | GAP_ADTYPE_FLAGS_BREDR_NOT_SUPPORTED,
+    GAP_ADTYPE_FLAGS_LIMITED | GAP_ADTYPE_FLAGS_BREDR_NOT_SUPPORTED,
 
     // appearance
     0x03,
@@ -67,6 +71,17 @@ static uint8 advertisingData[] =
     0x04, 0x05
 };
 
+// Updates the advertising data in memory ONLY
+// Does not update the BLE stack advertisement
+void UpdateAdvertisingData(uint32 revolutions, uint16 msPerRevolution)
+{
+    advertisingData[APP_DATA_INDEX] = revolutions && 0xFF;
+    advertisingData[APP_DATA_INDEX + 1] = (revolutions >> 8) && 0xFF;
+    advertisingData[APP_DATA_INDEX + 2] = (revolutions >> 16) && 0xFF;
+    advertisingData[APP_DATA_INDEX + 3] = LO_UINT16(msPerRevolution);
+    advertisingData[APP_DATA_INDEX + 4] = HI_UINT16(msPerRevolution);
+}
+
 static gapRolesCBs_t speedometer_PeripheralCBs =
 {
     NULL,  // Profile State Change Callbacks
@@ -77,15 +92,19 @@ void Speedometer_Init(uint8 task_id)
 {
     speedometerTaskId = task_id;
 
-    // HalUARTInit();
-    // UartInit();
+    // https://www.ti.com/lit/an/swra347a/swra347a.pdf
+    // Setup pins for low power
+    P0SEL = 0;
+    P1SEL = 0;
+    P2SEL = 0;
 
+    P0DIR = 0xFF;
+    P1DIR = 0xFF;
+    P2DIR = 0x1F;
 
-    // uint8 message[] = {'P', 'e', 'e', 'p', '\n'};
-    // HalUARTWrite(HAL_UART_PORT_1, message, 5);
-
-    // Setup GAP ()
-    GAP_SetParamValue(TGAP_CONN_PAUSE_PERIPHERAL, 6); // Pause 6 seconds (?)
+    P0 = 0;
+    P1 = 0;
+    P2 = 0;
 
     // Setup GAP role peripheral broadcaster
     uint8 enableAdvertising = TRUE;
@@ -97,20 +116,6 @@ void Speedometer_Init(uint8 task_id)
     GAPRole_SetParameter(GAPROLE_SCAN_RSP_DATA, sizeof(scanResponse), scanResponse);
     GAPRole_SetParameter(GAPROLE_ADVERT_DATA, sizeof(advertisingData), advertisingData);
 
-    uint8 enableUpdateRequest = TRUE;
-
-    // The range of the connection interval
-    uint16 minConnInterval = 80; // 10 ms
-    uint16 maxConnInterval = 800; // 10 ms
-    uint16 peripheralLatency = 0; // The number of connection events we can skip
-    uint16 connTimeoutMultiplier = 1000; // Connection timeout in units of 10 ms
-
-    GAPRole_SetParameter(GAPROLE_PARAM_UPDATE_ENABLE, sizeof(uint8), &enableUpdateRequest);
-    GAPRole_SetParameter(GAPROLE_MIN_CONN_INTERVAL, sizeof(uint16), &minConnInterval);
-    GAPRole_SetParameter(GAPROLE_MAX_CONN_INTERVAL, sizeof(uint16), &maxConnInterval);
-    GAPRole_SetParameter(GAPROLE_SLAVE_LATENCY, sizeof(uint16), &peripheralLatency);
-    GAPRole_SetParameter(GAPROLE_TIMEOUT_MULTIPLIER, sizeof(uint16), &connTimeoutMultiplier);
-
     // https://academy.nordicsemi.com/courses/bluetooth-low-energy-fundamentals/lessons/lesson-2-bluetooth-le-advertising/topic/advertising-types/
     // ADV_NONCONN_IND means that the device is not connectable and does not accept
     // scan requests.
@@ -120,12 +125,17 @@ void Speedometer_Init(uint8 task_id)
     // Set GATT server name attribute
     GGS_SetParameter(GGS_DEVICE_NAME_ATT, DEVICE_NAME_LEN, deviceName);
 
-    uint16 advInt = 160; // In units of 0.625 ms, 160 = 100 ms
-
+    // 5 second advertising interval (just needs to be above 1 second)
+    uint16 advInt = 8000;
     GAP_SetParamValue(TGAP_LIM_DISC_ADV_INT_MIN, advInt);
     GAP_SetParamValue(TGAP_LIM_DISC_ADV_INT_MAX, advInt);
     GAP_SetParamValue(TGAP_GEN_DISC_ADV_INT_MIN, advInt);
     GAP_SetParamValue(TGAP_GEN_DISC_ADV_INT_MAX, advInt);
+
+    // Send out advertisements for only 1 second
+    // Effectively sends a single packet
+    uint16 advTimeout = 1;
+    GAP_SetParamValue(TGAP_LIM_ADV_TIMEOUT, 1);
 
     GGS_AddService(GATT_ALL_SERVICES);
     GATTServApp_AddService(GATT_ALL_SERVICES);
@@ -135,6 +145,7 @@ void Speedometer_Init(uint8 task_id)
 }
 
 uint8 counter = 0;
+uint32 previousSleepTimer = 0;
 
 uint16 Speedometer_ProcessEvent(uint8 task_id, uint16 events)
 {
@@ -152,7 +163,18 @@ uint16 Speedometer_ProcessEvent(uint8 task_id, uint16 events)
         // puts("Device initialized\n", 19);
         GAPRole_StartDevice(&speedometer_PeripheralCBs);
 
-        osal_start_reload_timer(speedometerTaskId, PERIODIC_EVENT, 1000);
+        // Calling this will reset the timer countdown
+        // This will be useful later to put the device into PM2
+        // to count the sleep timer.
+
+        // If this event triggers, the device has not been woken by an interrupt for 
+        // 30 seconds, which likely indicates the bike has stopped. We should stop using
+        // the sleep timer to compute velocity, so the device can enter PM3.
+        osal_start_timerEx(speedometerTaskId, DEVICE_TIMEOUT_EVENT, 30 * 1000);
+
+        osal_start_reload_timer(speedometerTaskId, PERIODIC_EVENT, 2000);
+
+        osal_GetSystemClock
 
         return (events ^ DEVICE_INIT_EVENT);
     }
@@ -162,8 +184,18 @@ uint16 Speedometer_ProcessEvent(uint8 task_id, uint16 events)
         counter++;
         advertisingData[11] = counter;
         GAP_UpdateAdvertisingData(speedometerTaskId, TRUE, sizeof(advertisingData), advertisingData);
+        
+        uint8 enableAdvertising = TRUE;
+        GAPRole_SetParameter(GAPROLE_ADVERT_ENABLED, sizeof(uint8), &enableAdvertising);
 
         return (events ^ PERIODIC_EVENT);
+    }
+
+    if (events & DEVICE_TIMEOUT_EVENT)
+    {
+        // TODO
+
+        return (events ^ DEVICE_TIMEOUT_EVENT);
     }
 
     return 0;
