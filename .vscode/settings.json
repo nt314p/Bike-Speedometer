@@ -28,6 +28,13 @@
         "gapgattserver.h": "c",
         "gattservapp.h": "c",
         "*.c_": "c",
-        "hal_sleep.h": "c"
+        "hal_sleep.h": "c",
+        "peripheral.h": "c",
+        "gap.h": "c",
+        "osal_timers.h": "c",
+        "onboard.h": "c",
+        "devinfoservice.h": "c",
+        "hal_mcu.h": "c",
+        "iocc2541.h": "c"
     }
 }

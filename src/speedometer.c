@@ -75,9 +75,9 @@ static uint8 advertisingData[] =
 // Does not update the BLE stack advertisement
 void UpdateAdvertisingData(uint32 revolutions, uint16 msPerRevolution)
 {
-    advertisingData[APP_DATA_INDEX] = revolutions && 0xFF;
-    advertisingData[APP_DATA_INDEX + 1] = (revolutions >> 8) && 0xFF;
-    advertisingData[APP_DATA_INDEX + 2] = (revolutions >> 16) && 0xFF;
+    advertisingData[APP_DATA_INDEX] = revolutions & 0xFF;
+    advertisingData[APP_DATA_INDEX + 1] = (revolutions >> 8) & 0xFF;
+    advertisingData[APP_DATA_INDEX + 2] = (revolutions >> 16) & 0xFF;
     advertisingData[APP_DATA_INDEX + 3] = LO_UINT16(msPerRevolution);
     advertisingData[APP_DATA_INDEX + 4] = HI_UINT16(msPerRevolution);
 }
@@ -87,6 +87,9 @@ static gapRolesCBs_t speedometer_PeripheralCBs =
     NULL,  // Profile State Change Callbacks
     NULL  // When a valid RSSI is read from controller (not used by application)
 };
+
+#define BUTTON_BIT BV(6)
+#define REED_SW_BIT BV(7)
 
 void Speedometer_Init(uint8 task_id)
 {
@@ -98,13 +101,24 @@ void Speedometer_Init(uint8 task_id)
     P1SEL = 0;
     P2SEL = 0;
 
-    P0DIR = 0xFF;
+    P0DIR = 0x3F; // Set P0.6 and P0.7 as input
     P1DIR = 0xFF;
     P2DIR = 0x1F;
 
     P0 = 0;
     P1 = 0;
     P2 = 0;
+
+    // Enable interrupts for P0.6 and P0.7
+    // See hal_key.c for more details
+    //PICTL &= ~BV(0);
+    //PICTL |= BV(0); // Falling edge for all Port 0 pins give interrupt
+
+    P0IEN |= REED_SW_BIT | BUTTON_BIT; // Enable interrupts for P0.7 and P0.6
+    IEN1 |= BV(5); // Enable Port 0 interrupts
+    P0IFG = ~(REED_SW_BIT | BUTTON_BIT); // Clear any pending interrupts for the pins
+
+    P0INP = REED_SW_BIT | BUTTON_BIT; // Set P0.7 and P0.6 inputs to 3 state
 
     // Setup GAP role peripheral broadcaster
     uint8 enableAdvertising = TRUE;
@@ -147,6 +161,9 @@ void Speedometer_Init(uint8 task_id)
 uint8 counter = 0;
 uint32 previousSleepTimer = 0;
 
+uint8 buttonClicks = 0;
+uint8 reedClicks = 0;
+
 uint16 Speedometer_ProcessEvent(uint8 task_id, uint16 events)
 {
     if (events & SYS_EVENT_MSG)
@@ -174,17 +191,15 @@ uint16 Speedometer_ProcessEvent(uint8 task_id, uint16 events)
 
         osal_start_reload_timer(speedometerTaskId, PERIODIC_EVENT, 2000);
 
-        osal_GetSystemClock
-
         return (events ^ DEVICE_INIT_EVENT);
     }
 
     if (events & PERIODIC_EVENT)
     {
-        counter++;
-        advertisingData[11] = counter;
+        //counter++;
+        //advertisingData[11] = counter;
         GAP_UpdateAdvertisingData(speedometerTaskId, TRUE, sizeof(advertisingData), advertisingData);
-        
+
         uint8 enableAdvertising = TRUE;
         GAPRole_SetParameter(GAPROLE_ADVERT_ENABLED, sizeof(uint8), &enableAdvertising);
 
@@ -199,4 +214,31 @@ uint16 Speedometer_ProcessEvent(uint8 task_id, uint16 events)
     }
 
     return 0;
+}
+
+// P0 interrupt handler for any port 0 interrupts
+HAL_ISR_FUNCTION(P0INT_ISR, P0INT_VECTOR)
+{
+    HAL_ENTER_ISR();
+
+    if (P0IFG & REED_SW_BIT)
+    {
+        P0IFG &= ~REED_SW_BIT; // Clear interrupt
+        reedClicks++;
+        // TODO: send advertisement
+    }
+
+    if (P0IFG & BUTTON_BIT)
+    {
+        P0IFG &= ~BUTTON_BIT; // Clear interrupt
+        buttonClicks++;
+        // TODO: begin checking if button is held long enough for distance reset
+    }
+
+    UpdateAdvertisingData(reedClicks, buttonClicks);
+
+    P0IFG = 0; // Clear remaining interrupts
+    P0IF = 0; // Clear CPU interrupt flag
+
+    HAL_EXIT_ISR();
 }
