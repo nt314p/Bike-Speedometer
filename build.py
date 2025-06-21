@@ -222,10 +222,13 @@ def build_file(command_stem, source_file):
     if PREAMBLE_END in result.stdout:
         output = result.stdout.split(PREAMBLE_END)[1] # remove preamble
     else:
-        output = result.stdout
+        output = result.stdout        
         
     print(output) 
     print(result.stderr)
+
+    if "Errors: none" not in output:
+        return None
 
     f = open(dependency_file, "r")
     dependencies = f.read().splitlines()
@@ -243,6 +246,10 @@ for s in sources:
 while len(sources) > 0:
     source = sources.pop()
     dependencies = build_file(compile_command, source)
+
+    if dependencies is None:
+        print("Build error, quitting")
+        exit()
 
     for file in dependencies:
         if not file.endswith(".h"):

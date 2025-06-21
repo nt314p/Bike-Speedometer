@@ -19,9 +19,17 @@
 #define DEVICE_INIT_EVENT 1 << 0
 #define PERIODIC_EVENT 1 << 1
 #define DEVICE_TIMEOUT_EVENT 1 << 2
+#define REED_TRIGGER_EVENT 1 << 3
 
 #define DEVICE_NAME_LEN 16
 static uint8 deviceName[DEVICE_NAME_LEN] = "Bike Speedometer";
+
+#define REVOLUTION_TIME_THRESHOLD_MS 200
+#define MAX_REVOLUTION_TIME 0xFFFF
+#define TIMEOUT_THRESHOLD_MS 10000
+
+#define BUTTON_BIT BV(6)
+#define REED_SW_BIT BV(7)
 
 uint8 speedometerTaskId;
 
@@ -88,13 +96,8 @@ static gapRolesCBs_t speedometer_PeripheralCBs =
     NULL  // When a valid RSSI is read from controller (not used by application)
 };
 
-#define BUTTON_BIT BV(6)
-#define REED_SW_BIT BV(7)
-
-void Speedometer_Init(uint8 task_id)
+void SetupPins()
 {
-    speedometerTaskId = task_id;
-
     // https://www.ti.com/lit/an/swra347a/swra347a.pdf
     // Setup pins for low power
     P0SEL = 0;
@@ -116,9 +119,16 @@ void Speedometer_Init(uint8 task_id)
 
     P0IEN |= REED_SW_BIT | BUTTON_BIT; // Enable interrupts for P0.7 and P0.6
     IEN1 |= BV(5); // Enable Port 0 interrupts
-    P0IFG = ~(REED_SW_BIT | BUTTON_BIT); // Clear any pending interrupts for the pins
+    P0IFG = (uint8)~(REED_SW_BIT | BUTTON_BIT); // Clear any pending interrupts for the pins
 
     P0INP = REED_SW_BIT | BUTTON_BIT; // Set P0.7 and P0.6 inputs to 3 state
+}
+
+void Speedometer_Init(uint8 task_id)
+{
+    speedometerTaskId = task_id;
+
+    SetupPins();
 
     // Setup GAP role peripheral broadcaster
     uint8 enableAdvertising = TRUE;
@@ -141,6 +151,9 @@ void Speedometer_Init(uint8 task_id)
 
     // 5 second advertising interval (just needs to be above 1 second)
     uint16 advInt = 8000;
+
+    advInt = 200;
+
     GAP_SetParamValue(TGAP_LIM_DISC_ADV_INT_MIN, advInt);
     GAP_SetParamValue(TGAP_LIM_DISC_ADV_INT_MAX, advInt);
     GAP_SetParamValue(TGAP_GEN_DISC_ADV_INT_MIN, advInt);
@@ -148,8 +161,8 @@ void Speedometer_Init(uint8 task_id)
 
     // Send out advertisements for only 1 second
     // Effectively sends a single packet
-    uint16 advTimeout = 1;
-    GAP_SetParamValue(TGAP_LIM_ADV_TIMEOUT, 1);
+    // uint16 advTimeout = 1;
+    // GAP_SetParamValue(TGAP_LIM_ADV_TIMEOUT, 1);
 
     GGS_AddService(GATT_ALL_SERVICES);
     GATTServApp_AddService(GATT_ALL_SERVICES);
@@ -158,48 +171,65 @@ void Speedometer_Init(uint8 task_id)
     osal_set_event(speedometerTaskId, DEVICE_INIT_EVENT);
 }
 
-uint8 counter = 0;
-uint32 previousSleepTimer = 0;
+uint32 GetSleepTimer()
+{
+    uint32 time = ST0; // ST0 must be read first to latch clock values
+    time |= ((uint32)ST1) << 8;
+    time |= ((uint32)ST2) << 16;
 
-uint8 buttonClicks = 0;
-uint8 reedClicks = 0;
+    return time;
+}
+
+uint32 SleepTicksToMs(uint32 ticks)
+{
+    return (ticks * 125U) / 4096U;
+}
+
+uint32 GetSleepTimerMs()
+{
+    return (GetSleepTimer() * 125U) / 4096U;
+}
+
+uint32 prevRevolutionTimeMs = 0;
+uint32 revolutionCounter = 0;
+uint32 diffMs = 0;
+uint8 isPreviousTimeValid = FALSE;
 
 uint16 Speedometer_ProcessEvent(uint8 task_id, uint16 events)
 {
     if (events & SYS_EVENT_MSG)
     {
         // We don't expect any messages
-
         return (events ^ SYS_EVENT_MSG);
     }
 
     if (events & DEVICE_INIT_EVENT)
     {
+        revolutionCounter = 0;
+        prevRevolutionTimeMs = 0;
+        isPreviousTimeValid = FALSE;
 
-        // Called when device starts
-        // puts("Device initialized\n", 19);
         GAPRole_StartDevice(&speedometer_PeripheralCBs);
+
+        UpdateAdvertisingData(revolutionCounter, 0);
+        GAP_UpdateAdvertisingData(speedometerTaskId, TRUE, sizeof(advertisingData), advertisingData);
 
         // Calling this will reset the timer countdown
         // This will be useful later to put the device into PM2
         // to count the sleep timer.
 
         // If this event triggers, the device has not been woken by an interrupt for 
-        // 30 seconds, which likely indicates the bike has stopped. We should stop using
+        // 10 seconds, which likely indicates the bike has stopped. We should stop using
         // the sleep timer to compute velocity, so the device can enter PM3.
-        osal_start_timerEx(speedometerTaskId, DEVICE_TIMEOUT_EVENT, 30 * 1000);
+        osal_start_timerEx(speedometerTaskId, DEVICE_TIMEOUT_EVENT, TIMEOUT_THRESHOLD_MS);
 
-        osal_start_reload_timer(speedometerTaskId, PERIODIC_EVENT, 2000);
+        osal_start_reload_timer(speedometerTaskId, PERIODIC_EVENT, 100);
 
         return (events ^ DEVICE_INIT_EVENT);
     }
 
     if (events & PERIODIC_EVENT)
     {
-        //counter++;
-        //advertisingData[11] = counter;
-        GAP_UpdateAdvertisingData(speedometerTaskId, TRUE, sizeof(advertisingData), advertisingData);
-
         uint8 enableAdvertising = TRUE;
         GAPRole_SetParameter(GAPROLE_ADVERT_ENABLED, sizeof(uint8), &enableAdvertising);
 
@@ -208,9 +238,29 @@ uint16 Speedometer_ProcessEvent(uint8 task_id, uint16 events)
 
     if (events & DEVICE_TIMEOUT_EVENT)
     {
-        // TODO
+        isPreviousTimeValid = FALSE;
+
+        UpdateAdvertisingData(revolutionCounter, 0);
+        GAP_UpdateAdvertisingData(speedometerTaskId, TRUE, sizeof(advertisingData), advertisingData);
 
         return (events ^ DEVICE_TIMEOUT_EVENT);
+    }
+
+    if (events & REED_TRIGGER_EVENT)
+    {
+        // Reset the timeout timer
+        osal_start_timerEx(speedometerTaskId, DEVICE_TIMEOUT_EVENT, TIMEOUT_THRESHOLD_MS);
+        revolutionCounter++;
+
+        if (!isPreviousTimeValid) diffMs = 0;
+        if (diffMs > MAX_REVOLUTION_TIME) diffMs = MAX_REVOLUTION_TIME;
+
+        isPreviousTimeValid = TRUE;
+
+        UpdateAdvertisingData(revolutionCounter, diffMs);
+        GAP_UpdateAdvertisingData(speedometerTaskId, TRUE, sizeof(advertisingData), advertisingData);
+
+        return (events ^ REED_TRIGGER_EVENT);
     }
 
     return 0;
@@ -224,18 +274,25 @@ HAL_ISR_FUNCTION(P0INT_ISR, P0INT_VECTOR)
     if (P0IFG & REED_SW_BIT)
     {
         P0IFG &= ~REED_SW_BIT; // Clear interrupt
-        reedClicks++;
-        // TODO: send advertisement
+
+        while (!(SLEEPSTA & 1)); // Wait for positive clock
+
+        uint32 currMs = GetSleepTimerMs();
+        diffMs = (currMs - prevRevolutionTimeMs) & 0xFFFFFF;
+
+        // Filter out impossibly short times < 200 ms
+        if (diffMs >= REVOLUTION_TIME_THRESHOLD_MS)
+        {
+            prevRevolutionTimeMs = currMs;
+            osal_set_event(speedometerTaskId, REED_TRIGGER_EVENT);
+        }
     }
 
     if (P0IFG & BUTTON_BIT)
     {
         P0IFG &= ~BUTTON_BIT; // Clear interrupt
-        buttonClicks++;
         // TODO: begin checking if button is held long enough for distance reset
     }
-
-    UpdateAdvertisingData(reedClicks, buttonClicks);
 
     P0IFG = 0; // Clear remaining interrupts
     P0IF = 0; // Clear CPU interrupt flag
