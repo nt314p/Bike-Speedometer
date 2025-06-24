@@ -13,8 +13,8 @@
 #include "gapbondmgr.h"
 #include "battservice.h"
 #include "hal_types.h"
-#include "hal_uart.h"
-#include "hal_sleep.h"
+
+#include "speedometerGATTProfile.h"
 
 #define DEVICE_INIT_EVENT 1 << 0
 #define PERIODIC_EVENT 1 << 1
@@ -31,7 +31,7 @@ static uint8 deviceName[DEVICE_NAME_LEN] = "Bike Speedometer";
 #define BUTTON_BIT BV(6)
 #define REED_SW_BIT BV(7)
 
-uint8 speedometerTaskId;
+static uint8 speedometerTaskId;
 
 // https://jimmywongiot.com/2019/08/13/advertising-payload-format-on-ble/
 // https://www.ti.com/lit/ug/swru271i/swru271i.pdf
@@ -81,7 +81,7 @@ static uint8 advertisingData[] =
 
 // Updates the advertising data in memory ONLY
 // Does not update the BLE stack advertisement
-void UpdateAdvertisingData(uint32 revolutions, uint16 msPerRevolution)
+static void UpdateAdvertisingData(uint32 revolutions, uint16 msPerRevolution)
 {
     advertisingData[APP_DATA_INDEX] = revolutions & 0xFF;
     advertisingData[APP_DATA_INDEX + 1] = (revolutions >> 8) & 0xFF;
@@ -96,7 +96,14 @@ static gapRolesCBs_t speedometer_PeripheralCBs =
     NULL  // When a valid RSSI is read from controller (not used by application)
 };
 
-void SetupPins()
+// GAP Bond Manager Callbacks
+static gapBondCBs_t speedometer_BondMgrCBs =
+{
+  NULL,                     // Passcode callback (not used by application)
+  NULL                      // Pairing / Bonding state Callback (not used by application)
+};
+
+static void SetupPins()
 {
     // https://www.ti.com/lit/an/swra347a/swra347a.pdf
     // Setup pins for low power
@@ -144,7 +151,22 @@ void Speedometer_Init(uint8 task_id)
     // ADV_NONCONN_IND means that the device is not connectable and does not accept
     // scan requests.
     uint8 advertisingType = GAP_ADTYPE_ADV_NONCONN_IND;
+    advertisingType = GAP_ADTYPE_ADV_IND;
     GAPRole_SetParameter(GAPROLE_ADV_EVENT_TYPE, sizeof(uint8), &advertisingType);
+
+    uint8 enableUpdateRequest = FALSE;
+
+    // The range of the connection interval
+    uint16 minConnInterval = 400; // 10 ms
+    uint16 maxConnInterval = 400; // 10 ms
+    uint16 peripheralLatency = 4; // The number of connection events we can skip
+    uint16 connTimeoutMultiplier = 500; // Connection timeout in units of 10 ms
+
+    GAPRole_SetParameter(GAPROLE_PARAM_UPDATE_ENABLE, sizeof(uint8), &enableUpdateRequest);
+    GAPRole_SetParameter(GAPROLE_MIN_CONN_INTERVAL, sizeof(uint16), &minConnInterval);
+    GAPRole_SetParameter(GAPROLE_MAX_CONN_INTERVAL, sizeof(uint16), &maxConnInterval);
+    GAPRole_SetParameter(GAPROLE_SLAVE_LATENCY, sizeof(uint16), &peripheralLatency);
+    GAPRole_SetParameter(GAPROLE_TIMEOUT_MULTIPLIER, sizeof(uint16), &connTimeoutMultiplier);
 
     // Set GATT server name attribute
     GGS_SetParameter(GGS_DEVICE_NAME_ATT, DEVICE_NAME_LEN, deviceName);
@@ -159,6 +181,18 @@ void Speedometer_Init(uint8 task_id)
     GAP_SetParamValue(TGAP_GEN_DISC_ADV_INT_MIN, advInt);
     GAP_SetParamValue(TGAP_GEN_DISC_ADV_INT_MAX, advInt);
 
+    // Setup the GAP Bond Manager
+    uint32 passkey = 0;
+    uint8 pairMode = GAPBOND_PAIRING_MODE_WAIT_FOR_REQ;
+    uint8 mitmProtection = TRUE;
+    uint8 ioCapabilities = GAPBOND_IO_CAP_NO_INPUT_NO_OUTPUT;
+    uint8 enableBonding = TRUE;
+    GAPBondMgr_SetParameter(GAPBOND_DEFAULT_PASSCODE, sizeof(uint32), &passkey);
+    GAPBondMgr_SetParameter(GAPBOND_PAIRING_MODE, sizeof(uint8), &pairMode);
+    GAPBondMgr_SetParameter(GAPBOND_MITM_PROTECTION, sizeof(uint8), &mitmProtection);
+    GAPBondMgr_SetParameter(GAPBOND_IO_CAPABILITIES, sizeof(uint8), &ioCapabilities);
+    GAPBondMgr_SetParameter(GAPBOND_BONDING_ENABLED, sizeof(uint8), &enableBonding);
+
     // Send out advertisements for only 1 second
     // Effectively sends a single packet
     // uint16 advTimeout = 1;
@@ -168,10 +202,14 @@ void Speedometer_Init(uint8 task_id)
     GATTServApp_AddService(GATT_ALL_SERVICES);
     DevInfo_AddService();
 
+    SpeedometerProfile_AddService(GATT_ALL_SERVICES);  // Speedometer GATT Profile
+    uint8 bikeData[BIKE_DATA_LEN] = { 0, 0, 0, 0, 0 };
+    SpeedometerProfile_SetParameter(SPEEDOMETER_PROFILE_CHAR_BIKE_DATA, BIKE_DATA_LEN, bikeData);
+
     osal_set_event(speedometerTaskId, DEVICE_INIT_EVENT);
 }
 
-uint32 GetSleepTimer()
+static uint32 GetSleepTimer()
 {
     uint32 time = ST0; // ST0 must be read first to latch clock values
     time |= ((uint32)ST1) << 8;
@@ -180,20 +218,20 @@ uint32 GetSleepTimer()
     return time;
 }
 
-uint32 SleepTicksToMs(uint32 ticks)
+static uint32 SleepTicksToMs(uint32 ticks)
 {
     return (ticks * 125U) / 4096U;
 }
 
-uint32 GetSleepTimerMs()
+static uint32 GetSleepTimerMs()
 {
     return (GetSleepTimer() * 125U) / 4096U;
 }
 
-uint32 prevRevolutionTimeMs = 0;
-uint32 revolutionCounter = 0;
-uint32 diffMs = 0;
-uint8 isPreviousTimeValid = FALSE;
+static uint32 prevRevolutionTimeMs = 0;
+static uint32 revolutionCounter = 0;
+static uint32 diffMs = 0;
+static uint8 isPreviousTimeValid = FALSE;
 
 uint16 Speedometer_ProcessEvent(uint8 task_id, uint16 events)
 {
@@ -210,6 +248,8 @@ uint16 Speedometer_ProcessEvent(uint8 task_id, uint16 events)
         isPreviousTimeValid = FALSE;
 
         GAPRole_StartDevice(&speedometer_PeripheralCBs);
+
+        GAPBondMgr_Register(&speedometer_BondMgrCBs);
 
         UpdateAdvertisingData(revolutionCounter, 0);
         GAP_UpdateAdvertisingData(speedometerTaskId, TRUE, sizeof(advertisingData), advertisingData);
@@ -230,8 +270,8 @@ uint16 Speedometer_ProcessEvent(uint8 task_id, uint16 events)
 
     if (events & PERIODIC_EVENT)
     {
-        uint8 enableAdvertising = TRUE;
-        GAPRole_SetParameter(GAPROLE_ADVERT_ENABLED, sizeof(uint8), &enableAdvertising);
+        // uint8 enableAdvertising = TRUE;
+        // GAPRole_SetParameter(GAPROLE_ADVERT_ENABLED, sizeof(uint8), &enableAdvertising);
 
         return (events ^ PERIODIC_EVENT);
     }
@@ -259,6 +299,17 @@ uint16 Speedometer_ProcessEvent(uint8 task_id, uint16 events)
 
         UpdateAdvertisingData(revolutionCounter, diffMs);
         GAP_UpdateAdvertisingData(speedometerTaskId, TRUE, sizeof(advertisingData), advertisingData);
+        
+        uint8 bikeData[BIKE_DATA_LEN] = { 'A', 'B', 'C', 'D', 'E' };
+        bStatus_t status = SpeedometerProfile_SetParameter(SPEEDOMETER_PROFILE_CHAR_BIKE_DATA, BIKE_DATA_LEN, bikeData);
+        
+        // TODO: notifications are not being sent... why
+
+        if (status != SUCCESS)
+        {
+            revolutionCounter += 1000;
+            //GAP_UpdateAdvertisingData(speedometerTaskId, TRUE, sizeof(advertisingData), advertisingData);
+        }
 
         return (events ^ REED_TRIGGER_EVENT);
     }

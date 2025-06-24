@@ -275,4 +275,8 @@ result = subprocess.run(" ".join(link_command + BLE_LIBS + objects), shell=True,
 print(result.stdout)
 print(result.stderr)
 
+if "Errors: none" not in result.stdout:
+    print("Link error, quitting")
+    exit()
+
 subprocess.run(["hex2bin", f"{BIN_DIR}/{TARGET}.hex"])
