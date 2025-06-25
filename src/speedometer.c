@@ -11,7 +11,6 @@
 #include "gattservapp.h"
 #include "devinfoservice.h"
 #include "gapbondmgr.h"
-#include "battservice.h"
 #include "hal_types.h"
 
 #include "speedometerGATTProfile.h"
@@ -144,7 +143,7 @@ void Speedometer_Init(uint8 task_id)
     GAPRole_SetParameter(GAPROLE_ADVERT_ENABLED, sizeof(uint8), &enableAdvertising);
     GAPRole_SetParameter(GAPROLE_ADVERT_OFF_TIME, sizeof(uint16), &advertOffTime);
 
-    GAPRole_SetParameter(GAPROLE_SCAN_RSP_DATA, sizeof(scanResponse), scanResponse);
+    //GAPRole_SetParameter(GAPROLE_SCAN_RSP_DATA, sizeof(scanResponse), scanResponse);
     GAPRole_SetParameter(GAPROLE_ADVERT_DATA, sizeof(advertisingData), advertisingData);
 
     // https://academy.nordicsemi.com/courses/bluetooth-low-energy-fundamentals/lessons/lesson-2-bluetooth-le-advertising/topic/advertising-types/
@@ -216,11 +215,6 @@ static uint32 GetSleepTimer()
     time |= ((uint32)ST2) << 16;
 
     return time;
-}
-
-static uint32 SleepTicksToMs(uint32 ticks)
-{
-    return (ticks * 125U) / 4096U;
 }
 
 static uint32 GetSleepTimerMs()
@@ -299,17 +293,16 @@ uint16 Speedometer_ProcessEvent(uint8 task_id, uint16 events)
 
         UpdateAdvertisingData(revolutionCounter, diffMs);
         GAP_UpdateAdvertisingData(speedometerTaskId, TRUE, sizeof(advertisingData), advertisingData);
-        
-        uint8 bikeData[BIKE_DATA_LEN] = { 'A', 'B', 'C', 'D', 'E' };
-        bStatus_t status = SpeedometerProfile_SetParameter(SPEEDOMETER_PROFILE_CHAR_BIKE_DATA, BIKE_DATA_LEN, bikeData);
-        
-        // TODO: notifications are not being sent... why
 
-        if (status != SUCCESS)
-        {
-            revolutionCounter += 1000;
-            //GAP_UpdateAdvertisingData(speedometerTaskId, TRUE, sizeof(advertisingData), advertisingData);
-        }
+        uint8 bikeData[BIKE_DATA_LEN] = { 0 };
+
+        bikeData[0] = revolutionCounter & 0xFF;
+        bikeData[1] = (revolutionCounter >> 8) & 0xFF;
+        bikeData[2] = (revolutionCounter >> 16) & 0xFF;
+        bikeData[3] = LO_UINT16(diffMs);
+        bikeData[4] = HI_UINT16(diffMs);
+
+        bStatus_t status = SpeedometerProfile_SetParameter(SPEEDOMETER_PROFILE_CHAR_BIKE_DATA, BIKE_DATA_LEN, bikeData);
 
         return (events ^ REED_TRIGGER_EVENT);
     }

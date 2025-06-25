@@ -53,7 +53,7 @@ static gattAttribute_t speedometerProfileAttrTable[SERVAPP_NUM_ATTR_SUPPORTED] =
     // Bike data value
     {
         { ATT_BT_UUID_SIZE, speedometerProfileCharBikeDataUUID },
-        GATT_PERMIT_READ, // changed this from 0
+        GATT_PERMIT_READ,
         0,
         bikeData
     },
@@ -171,7 +171,7 @@ bStatus_t SpeedometerProfile_GetParameter(uint8 param, void* value)
 
     case SPEEDOMETER_PROFILE_CHAR_BIKE_DATA:
     {
-        VOID memcpy(value, bikeData, BIKE_DATA_LEN);
+        memcpy(value, bikeData, BIKE_DATA_LEN);
     } break;
 
     default:
@@ -213,7 +213,7 @@ static bStatus_t SpeedometerProfile_ReadAttrCB(uint16 connHandle, gattAttribute_
 
             // Bike characteristic has no read permission but can be sent as a 
             // notification
-        case SPEEDOMETER_PROFILE_CHAR_BIKE_DATA:
+        case SPEEDOMETER_PROFILE_CHAR_BIKE_DATA_UUID:
         {
             *pLen = BIKE_DATA_LEN;
             memcpy(pValue, pAttr->pValue, BIKE_DATA_LEN);
