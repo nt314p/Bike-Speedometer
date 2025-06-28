@@ -1,26 +1,42 @@
 import asyncio
-from bleak import BleakScanner
+from bleak import BleakClient, BleakScanner
 
-# Replace with the BLE address of your target device
 TARGET_ADDRESS = "A0:6C:65:D9:56:B0"
+SERVICE_UUID = "0000fff0-0000-1000-8000-00805f9b34fb"
+CHARACTERISTIC_UUID = "0000fff1-0000-1000-8000-00805f9b34fb"
 
-def parse_manufacturer_data(data: bytes):
-    distance = int.from_bytes(data[0:3], byteorder="little")
-    speed = int.from_bytes(data[3:5], byteorder="little")
-
-    print(f"Distance (revolutions): {distance}")
-    print(f"Speed (ms/revolution): {speed}")
-
-def on_device_discovery_callback(device, advertisement_data):
-    if device.address != TARGET_ADDRESS:
+def parse_data(data: bytearray):
+    if len(data) != 5:
+        print(f"Unexpected data length: {len(data)}")
         return
-    
-    parse_manufacturer_data(advertisement_data.manufacturer_data[65535])
+
+    distance = data[0] | (data[1] << 8) | (data[2] << 16)
+    speed = data[3] | (data[4] << 8)
+
+    print(f"Distance: {distance} revs, Speed: {speed} ms/rev")
 
 async def main():
-    scanner = BleakScanner(on_device_discovery_callback)
+    device = await BleakScanner.find_device_by_address(TARGET_ADDRESS, timeout=10)
 
-    await scanner.start()
-    await asyncio.sleep(600)
+    if not device:
+        print("Device not found")
+        return
 
-asyncio.run(main())
+    print("Found device, connecting")
+
+    async with BleakClient(device) as client:
+        if not client.is_connected:
+            print("Failed to connect to the device.")
+            return
+
+        print("Connected!")
+        print("Attempting to subscribe to notifications")
+
+        # Subscribe to notifications
+        await client.start_notify(CHARACTERISTIC_UUID, lambda _, data: parse_data(data))
+
+        print("Listening for notifications")
+        await asyncio.sleep(600)
+
+if __name__ == "__main__":
+    asyncio.run(main())

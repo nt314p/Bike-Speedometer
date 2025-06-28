@@ -6,6 +6,7 @@
 #include "gap.h"
 #include "peripheral.h"
 #include "gatt.h"
+#include "hci.h"
 #include "gatt_profile_uuid.h"
 #include "gapgattserver.h"
 #include "gattservapp.h"
@@ -40,12 +41,12 @@ static uint8 speedometerTaskId;
 // by issuing a scan request. The advertising device responds with a scan
 // response. In this case, we respond with the device name.
 // Should disable to avoid turning on RX radio to listen for scan requests
-static uint8 scanResponse[] =
-{
-  17, // length of string (not including terminator) + 1
-  GAP_ADTYPE_LOCAL_NAME_COMPLETE,   // AD Type = Complete local name
-  'B', 'i', 'k', 'e', ' ', 'S', 'p', 'e', 'e', 'd', 'o', 'm', 'e', 't', 'e', 'r'
-};
+// static uint8 scanResponse[] =
+// {
+//   17, // length of string (not including terminator) + 1
+//   GAP_ADTYPE_LOCAL_NAME_COMPLETE,   // AD Type = Complete local name
+//   'B', 'i', 'k', 'e', ' ', 'S', 'p', 'e', 'e', 'd', 'o', 'm', 'e', 't', 'e', 'r'
+// };
 
 // https://www.bluetooth.com/wp-content/uploads/Files/Specification/Assigned_Numbers.html#bookmark49
 #define GAP_APPEARE_GENERIC_CYCLING 0x0480
@@ -61,32 +62,32 @@ static uint8 advertisingData[] =
     GAP_ADTYPE_FLAGS,
     GAP_ADTYPE_FLAGS_LIMITED | GAP_ADTYPE_FLAGS_BREDR_NOT_SUPPORTED,
 
-    // appearance
-    0x03,
-    GAP_ADTYPE_APPEARANCE,
-    LO_UINT16(GAP_APPEARE_GENERIC_HR_SENSOR),
-    HI_UINT16(GAP_APPEARE_GENERIC_HR_SENSOR),
+    // // appearance
+    // 0x03,
+    // GAP_ADTYPE_APPEARANCE,
+    // LO_UINT16(GAP_APPEARE_GENERIC_HR_SENSOR),
+    // HI_UINT16(GAP_APPEARE_GENERIC_HR_SENSOR),
 
-    // manufacturer's data
-    0x08,
-    GAP_ADTYPE_MANUFACTURER_SPECIFIC,
-    0xFF, 0xFF, // Company id for testing
+    // // manufacturer's data
+    // 0x08,
+    // GAP_ADTYPE_MANUFACTURER_SPECIFIC,
+    // 0xFF, 0xFF, // Company id for testing
 
-    // Distance (revolutions): 3 bytes little endian
-    // Speed (ms / revolution): 2 bytes little endian
-    0x01, 0x02, 0x03,
-    0x04, 0x05
+    // // Distance (revolutions): 3 bytes little endian
+    // // Speed (ms / revolution): 2 bytes little endian
+    // 0x01, 0x02, 0x03,
+    // 0x04, 0x05
 };
 
-// Updates the advertising data in memory ONLY
-// Does not update the BLE stack advertisement
-static void UpdateAdvertisingData(uint32 revolutions, uint16 msPerRevolution)
+static uint8 bikeData[BIKE_DATA_LEN] = { 0, 0, 0, 0, 0 };
+
+static void UpdateBikeData(uint32 revolutions, uint16 msPerRevolution)
 {
-    advertisingData[APP_DATA_INDEX] = revolutions & 0xFF;
-    advertisingData[APP_DATA_INDEX + 1] = (revolutions >> 8) & 0xFF;
-    advertisingData[APP_DATA_INDEX + 2] = (revolutions >> 16) & 0xFF;
-    advertisingData[APP_DATA_INDEX + 3] = LO_UINT16(msPerRevolution);
-    advertisingData[APP_DATA_INDEX + 4] = HI_UINT16(msPerRevolution);
+    bikeData[0] = revolutions & 0xFF;
+    bikeData[1] = (revolutions >> 8) & 0xFF;
+    bikeData[2] = (revolutions >> 16) & 0xFF;
+    bikeData[3] = LO_UINT16(msPerRevolution);
+    bikeData[4] = HI_UINT16(msPerRevolution);
 }
 
 static gapRolesCBs_t speedometer_PeripheralCBs =
@@ -98,8 +99,8 @@ static gapRolesCBs_t speedometer_PeripheralCBs =
 // GAP Bond Manager Callbacks
 static gapBondCBs_t speedometer_BondMgrCBs =
 {
-  NULL,                     // Passcode callback (not used by application)
-  NULL                      // Pairing / Bonding state Callback (not used by application)
+    NULL,                     // Passcode callback (not used by application)
+    NULL                      // Pairing / Bonding state Callback (not used by application)
 };
 
 static void SetupPins()
@@ -146,20 +147,16 @@ void Speedometer_Init(uint8 task_id)
     //GAPRole_SetParameter(GAPROLE_SCAN_RSP_DATA, sizeof(scanResponse), scanResponse);
     GAPRole_SetParameter(GAPROLE_ADVERT_DATA, sizeof(advertisingData), advertisingData);
 
-    // https://academy.nordicsemi.com/courses/bluetooth-low-energy-fundamentals/lessons/lesson-2-bluetooth-le-advertising/topic/advertising-types/
-    // ADV_NONCONN_IND means that the device is not connectable and does not accept
-    // scan requests.
-    uint8 advertisingType = GAP_ADTYPE_ADV_NONCONN_IND;
-    advertisingType = GAP_ADTYPE_ADV_IND;
+    uint8 advertisingType = GAP_ADTYPE_ADV_IND;
     GAPRole_SetParameter(GAPROLE_ADV_EVENT_TYPE, sizeof(uint8), &advertisingType);
 
-    uint8 enableUpdateRequest = FALSE;
+    uint8 enableUpdateRequest = TRUE;
 
     // The range of the connection interval
-    uint16 minConnInterval = 400; // 10 ms
-    uint16 maxConnInterval = 400; // 10 ms
-    uint16 peripheralLatency = 4; // The number of connection events we can skip
-    uint16 connTimeoutMultiplier = 500; // Connection timeout in units of 10 ms
+    uint16 minConnInterval = 120; // 150 ms
+    uint16 maxConnInterval = 120; // 150 ms
+    uint16 peripheralLatency = 20; // The number of connection events we can skip
+    uint16 connTimeoutMultiplier = 1000; // Connection timeout in units of 10 ms
 
     GAPRole_SetParameter(GAPROLE_PARAM_UPDATE_ENABLE, sizeof(uint8), &enableUpdateRequest);
     GAPRole_SetParameter(GAPROLE_MIN_CONN_INTERVAL, sizeof(uint16), &minConnInterval);
@@ -170,10 +167,7 @@ void Speedometer_Init(uint8 task_id)
     // Set GATT server name attribute
     GGS_SetParameter(GGS_DEVICE_NAME_ATT, DEVICE_NAME_LEN, deviceName);
 
-    // 5 second advertising interval (just needs to be above 1 second)
-    uint16 advInt = 8000;
-
-    advInt = 200;
+    uint16 advInt = 600;
 
     GAP_SetParamValue(TGAP_LIM_DISC_ADV_INT_MIN, advInt);
     GAP_SetParamValue(TGAP_LIM_DISC_ADV_INT_MAX, advInt);
@@ -192,17 +186,23 @@ void Speedometer_Init(uint8 task_id)
     GAPBondMgr_SetParameter(GAPBOND_IO_CAPABILITIES, sizeof(uint8), &ioCapabilities);
     GAPBondMgr_SetParameter(GAPBOND_BONDING_ENABLED, sizeof(uint8), &enableBonding);
 
-    // Send out advertisements for only 1 second
-    // Effectively sends a single packet
-    // uint16 advTimeout = 1;
-    // GAP_SetParamValue(TGAP_LIM_ADV_TIMEOUT, 1);
+    HCI_EXT_ClkDivOnHaltCmd(HCI_EXT_ENABLE_CLK_DIVIDE_ON_HALT);
+    HCI_EXT_SetTxPowerCmd(HCI_EXT_TX_POWER_MINUS_23_DBM);
+
+    // Use peripheral latency
+    HCI_EXT_SetSlaveLatencyOverrideCmd(HCI_EXT_ENABLE_SL_OVERRIDE);
+
+    // Allow new TX data (like notifications) to override skipping
+    // connection events until the maximum latency
+    // TODO: also conditionally disable the fast response to prevent 
+    // updates that are too fast (> 2 Hz)
+    HCI_EXT_SetFastTxResponseTimeCmd(HCI_EXT_ENABLE_FAST_TX_RESP_TIME);
 
     GGS_AddService(GATT_ALL_SERVICES);
     GATTServApp_AddService(GATT_ALL_SERVICES);
     DevInfo_AddService();
 
     SpeedometerProfile_AddService(GATT_ALL_SERVICES);  // Speedometer GATT Profile
-    uint8 bikeData[BIKE_DATA_LEN] = { 0, 0, 0, 0, 0 };
     SpeedometerProfile_SetParameter(SPEEDOMETER_PROFILE_CHAR_BIKE_DATA, BIKE_DATA_LEN, bikeData);
 
     osal_set_event(speedometerTaskId, DEVICE_INIT_EVENT);
@@ -242,10 +242,9 @@ uint16 Speedometer_ProcessEvent(uint8 task_id, uint16 events)
         isPreviousTimeValid = FALSE;
 
         GAPRole_StartDevice(&speedometer_PeripheralCBs);
-
         GAPBondMgr_Register(&speedometer_BondMgrCBs);
 
-        UpdateAdvertisingData(revolutionCounter, 0);
+        // UpdateAdvertisingData(revolutionCounter, 0);
         GAP_UpdateAdvertisingData(speedometerTaskId, TRUE, sizeof(advertisingData), advertisingData);
 
         // Calling this will reset the timer countdown
@@ -257,7 +256,7 @@ uint16 Speedometer_ProcessEvent(uint8 task_id, uint16 events)
         // the sleep timer to compute velocity, so the device can enter PM3.
         osal_start_timerEx(speedometerTaskId, DEVICE_TIMEOUT_EVENT, TIMEOUT_THRESHOLD_MS);
 
-        osal_start_reload_timer(speedometerTaskId, PERIODIC_EVENT, 100);
+        //osal_start_reload_timer(speedometerTaskId, PERIODIC_EVENT, 100);
 
         return (events ^ DEVICE_INIT_EVENT);
     }
@@ -274,8 +273,8 @@ uint16 Speedometer_ProcessEvent(uint8 task_id, uint16 events)
     {
         isPreviousTimeValid = FALSE;
 
-        UpdateAdvertisingData(revolutionCounter, 0);
-        GAP_UpdateAdvertisingData(speedometerTaskId, TRUE, sizeof(advertisingData), advertisingData);
+        UpdateBikeData(revolutionCounter, 0);
+        SpeedometerProfile_SetParameter(SPEEDOMETER_PROFILE_CHAR_BIKE_DATA, BIKE_DATA_LEN, bikeData);
 
         return (events ^ DEVICE_TIMEOUT_EVENT);
     }
@@ -291,18 +290,8 @@ uint16 Speedometer_ProcessEvent(uint8 task_id, uint16 events)
 
         isPreviousTimeValid = TRUE;
 
-        UpdateAdvertisingData(revolutionCounter, diffMs);
-        GAP_UpdateAdvertisingData(speedometerTaskId, TRUE, sizeof(advertisingData), advertisingData);
-
-        uint8 bikeData[BIKE_DATA_LEN] = { 0 };
-
-        bikeData[0] = revolutionCounter & 0xFF;
-        bikeData[1] = (revolutionCounter >> 8) & 0xFF;
-        bikeData[2] = (revolutionCounter >> 16) & 0xFF;
-        bikeData[3] = LO_UINT16(diffMs);
-        bikeData[4] = HI_UINT16(diffMs);
-
-        bStatus_t status = SpeedometerProfile_SetParameter(SPEEDOMETER_PROFILE_CHAR_BIKE_DATA, BIKE_DATA_LEN, bikeData);
+        UpdateBikeData(revolutionCounter, diffMs);
+        SpeedometerProfile_SetParameter(SPEEDOMETER_PROFILE_CHAR_BIKE_DATA, BIKE_DATA_LEN, bikeData);
 
         return (events ^ REED_TRIGGER_EVENT);
     }
@@ -311,6 +300,8 @@ uint16 Speedometer_ProcessEvent(uint8 task_id, uint16 events)
 }
 
 // P0 interrupt handler for any port 0 interrupts
+// Library source file hal_key.c was modified to remove
+// the P0 ISR so it would not overwrite this one.
 HAL_ISR_FUNCTION(P0INT_ISR, P0INT_VECTOR)
 {
     HAL_ENTER_ISR();
