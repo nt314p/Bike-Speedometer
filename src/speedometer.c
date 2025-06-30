@@ -2,6 +2,7 @@
 #include "bcomdef.h"
 #include "OSAL.h"
 #include "OSAL_Timers.h"
+#include "osal_snv.h"
 #include "OnBoard.h"
 #include "gap.h"
 #include "peripheral.h"
@@ -10,7 +11,6 @@
 #include "gatt_profile_uuid.h"
 #include "gapgattserver.h"
 #include "gattservapp.h"
-#include "devinfoservice.h"
 #include "gapbondmgr.h"
 #include "hal_types.h"
 
@@ -19,14 +19,19 @@
 #define DEVICE_INIT_EVENT 1 << 0
 #define PERIODIC_EVENT 1 << 1
 #define DEVICE_TIMEOUT_EVENT 1 << 2
-#define REED_TRIGGER_EVENT 1 << 3
+#define SEND_DATA_EVENT 1 << 3
+#define BUTTON_PRESS_EVENT 1 << 4
+
+#define SNV_ID_REVOLUTION_COUNTER 0x80
 
 #define DEVICE_NAME_LEN 16
 static uint8 deviceName[DEVICE_NAME_LEN] = "Bike Speedometer";
 
-#define REVOLUTION_TIME_THRESHOLD_MS 200
-#define MAX_REVOLUTION_TIME 0xFFFF
+#define REVOLUTION_DELTA_THRESHOLD_MS 200
+#define MAX_REVOLUTION_DELTA_MS 0xFFFF
+#define SEND_DELTA_THRESHOLD_MS 500
 #define TIMEOUT_THRESHOLD_MS 10000
+#define NEW_OLD_24BIT_TIME_DELTA(new, old) (((new) - (old)) & 0xFFFFFF)
 
 #define BUTTON_BIT BV(6)
 #define REED_SW_BIT BV(7)
@@ -48,13 +53,7 @@ static uint8 speedometerTaskId;
 //   'B', 'i', 'k', 'e', ' ', 'S', 'p', 'e', 'e', 'd', 'o', 'm', 'e', 't', 'e', 'r'
 // };
 
-// https://www.bluetooth.com/wp-content/uploads/Files/Specification/Assigned_Numbers.html#bookmark49
-#define GAP_APPEARE_GENERIC_CYCLING 0x0480
-
-#define APP_DATA_INDEX 11
-
 // Advertising devices send out advertising packets to Central devices.
-// This packet contains flags, appearance, and service UUID data.
 static uint8 advertisingData[] =
 {
     // flags
@@ -103,6 +102,12 @@ static gapBondCBs_t speedometer_BondMgrCBs =
     NULL                      // Pairing / Bonding state Callback (not used by application)
 };
 
+// The symbols below are in a library header that cannot be parsed by vscode
+// Defining them here allows intellisense to work
+#ifdef VSCODE
+extern volatile uint8 EA, P0, P1, P2, IEN1, P0IFG, P0IF;
+#endif
+
 static void SetupPins()
 {
     // https://www.ti.com/lit/an/swra347a/swra347a.pdf
@@ -119,16 +124,17 @@ static void SetupPins()
     P1 = 0;
     P2 = 0;
 
+    P0INP = REED_SW_BIT | BUTTON_BIT; // Set P0.7 and P0.6 inputs to 3 state
+
     // Enable interrupts for P0.6 and P0.7
     // See hal_key.c for more details
-    //PICTL &= ~BV(0);
+    PICTL = 0;
+    //PICTL &= (uint8)(~BV(0)); // Rising edge for all Port 0 pins give interrupt
     //PICTL |= BV(0); // Falling edge for all Port 0 pins give interrupt
 
     P0IEN |= REED_SW_BIT | BUTTON_BIT; // Enable interrupts for P0.7 and P0.6
     IEN1 |= BV(5); // Enable Port 0 interrupts
     P0IFG = (uint8)~(REED_SW_BIT | BUTTON_BIT); // Clear any pending interrupts for the pins
-
-    P0INP = REED_SW_BIT | BUTTON_BIT; // Set P0.7 and P0.6 inputs to 3 state
 }
 
 void Speedometer_Init(uint8 task_id)
@@ -194,13 +200,11 @@ void Speedometer_Init(uint8 task_id)
 
     // Allow new TX data (like notifications) to override skipping
     // connection events until the maximum latency
-    // TODO: also conditionally disable the fast response to prevent 
-    // updates that are too fast (> 2 Hz)
     HCI_EXT_SetFastTxResponseTimeCmd(HCI_EXT_ENABLE_FAST_TX_RESP_TIME);
 
     GGS_AddService(GATT_ALL_SERVICES);
     GATTServApp_AddService(GATT_ALL_SERVICES);
-    DevInfo_AddService();
+    //DevInfo_AddService();
 
     SpeedometerProfile_AddService(GATT_ALL_SERVICES);  // Speedometer GATT Profile
     SpeedometerProfile_SetParameter(SPEEDOMETER_PROFILE_CHAR_BIKE_DATA, BIKE_DATA_LEN, bikeData);
@@ -222,29 +226,38 @@ static uint32 GetSleepTimerMs()
     return (GetSleepTimer() * 125U) / 4096U;
 }
 
-static uint32 prevRevolutionTimeMs = 0;
+static uint32 lastRevolutionTimeMs = 0;
+static uint32 lastSendTimeMs = 0;
 static uint32 revolutionCounter = 0;
-static uint32 diffMs = 0;
+static uint32 revolutionDeltaMs = 0;
 static uint8 isPreviousTimeValid = FALSE;
 
 uint16 Speedometer_ProcessEvent(uint8 task_id, uint16 events)
 {
     if (events & SYS_EVENT_MSG)
     {
-        // We don't expect any messages
-        return (events ^ SYS_EVENT_MSG);
+        return (events ^ SYS_EVENT_MSG); // We don't expect any messages
     }
 
     if (events & DEVICE_INIT_EVENT)
     {
-        revolutionCounter = 0;
-        prevRevolutionTimeMs = 0;
+        // Attempt to read saved revolution counter
+        uint8 status = osal_snv_read(SNV_ID_REVOLUTION_COUNTER, 
+            sizeof(revolutionCounter), &revolutionCounter);
+
+        if (status == NV_OPER_FAILED) // Item does not exist
+        {
+            revolutionCounter = 0; // Initialize value in memory and NV
+            osal_snv_write(SNV_ID_REVOLUTION_COUNTER, sizeof(revolutionCounter), &revolutionCounter);
+        }
+        
+        lastRevolutionTimeMs = 0;
+        lastSendTimeMs = 0;
         isPreviousTimeValid = FALSE;
 
         GAPRole_StartDevice(&speedometer_PeripheralCBs);
         GAPBondMgr_Register(&speedometer_BondMgrCBs);
 
-        // UpdateAdvertisingData(revolutionCounter, 0);
         GAP_UpdateAdvertisingData(speedometerTaskId, TRUE, sizeof(advertisingData), advertisingData);
 
         // Calling this will reset the timer countdown
@@ -279,29 +292,39 @@ uint16 Speedometer_ProcessEvent(uint8 task_id, uint16 events)
         return (events ^ DEVICE_TIMEOUT_EVENT);
     }
 
-    if (events & REED_TRIGGER_EVENT)
+    if (events & SEND_DATA_EVENT)
     {
         // Reset the timeout timer
         osal_start_timerEx(speedometerTaskId, DEVICE_TIMEOUT_EVENT, TIMEOUT_THRESHOLD_MS);
-        revolutionCounter++;
-
-        if (!isPreviousTimeValid) diffMs = 0;
-        if (diffMs > MAX_REVOLUTION_TIME) diffMs = MAX_REVOLUTION_TIME;
+        
+        if (!isPreviousTimeValid) revolutionDeltaMs = 0;
+        if (revolutionDeltaMs > MAX_REVOLUTION_DELTA_MS) revolutionDeltaMs = MAX_REVOLUTION_DELTA_MS;
 
         isPreviousTimeValid = TRUE;
 
-        UpdateBikeData(revolutionCounter, diffMs);
+        UpdateBikeData(revolutionCounter, revolutionDeltaMs);
         SpeedometerProfile_SetParameter(SPEEDOMETER_PROFILE_CHAR_BIKE_DATA, BIKE_DATA_LEN, bikeData);
 
-        return (events ^ REED_TRIGGER_EVENT);
+        return (events ^ SEND_DATA_EVENT);
     }
 
     return 0;
 }
 
+/*
+TODO: Button controls
+
+One press: 
+- wakes up MCU, will start advertising for 10 seconds if not connected
+- saves revolution counter value to NV mem
+
+Five presses within 2 seconds
+- resets revolution counter in NV mem
+*/
+
 // P0 interrupt handler for any port 0 interrupts
 // Library source file hal_key.c was modified to remove
-// the P0 ISR so it would not overwrite this one.
+// the P0 ISR, so it would not overwrite this one.
 HAL_ISR_FUNCTION(P0INT_ISR, P0INT_VECTOR)
 {
     HAL_ENTER_ISR();
@@ -312,14 +335,22 @@ HAL_ISR_FUNCTION(P0INT_ISR, P0INT_VECTOR)
 
         while (!(SLEEPSTA & 1)); // Wait for positive clock
 
-        uint32 currMs = GetSleepTimerMs();
-        diffMs = (currMs - prevRevolutionTimeMs) & 0xFFFFFF;
+        uint32 currentMs = GetSleepTimerMs();
+        revolutionDeltaMs = NEW_OLD_24BIT_TIME_DELTA(currentMs, lastRevolutionTimeMs);
 
-        // Filter out impossibly short times < 200 ms
-        if (diffMs >= REVOLUTION_TIME_THRESHOLD_MS)
+        // Filter out impossibly short times below some threshold
+        if (revolutionDeltaMs >= REVOLUTION_DELTA_THRESHOLD_MS)
         {
-            prevRevolutionTimeMs = currMs;
-            osal_set_event(speedometerTaskId, REED_TRIGGER_EVENT);
+            lastRevolutionTimeMs = currentMs;
+            revolutionCounter++;
+            
+            uint32 sendDeltaMs = NEW_OLD_24BIT_TIME_DELTA(currentMs, lastSendTimeMs);
+            
+            if (sendDeltaMs >= SEND_DELTA_THRESHOLD_MS)
+            {
+                lastSendTimeMs = currentMs;
+                osal_set_event(speedometerTaskId, SEND_DATA_EVENT);
+            }
         }
     }
 

@@ -9,6 +9,7 @@
                 "C:\\Program Files (x86)\\Texas Instruments\\BLE-CC254x-1.5.0.16\\Projects\\ble\\**"
             ],
             "defines": [
+                "VSCODE",
                 "_DEBUG",
                 "UNICODE",
                 "_UNICODE",
@@ -18,6 +19,8 @@
                 "__sfr=",
                 "__no_init=",
                 "__interrupt=",
+                "__near_func=",
+                "__xdata=",
                 "@="
             ],
             "cStandard": "c17",

@@ -1,5 +1,5 @@
 {
-    "C_Cpp.errorSquiggles": "disabled",
+    //"C_Cpp.errorSquiggles": "disabled",
     "C_Cpp.default.compilerArgs": [
         "-nostdinc"
     ],
@@ -35,6 +35,8 @@
         "onboard.h": "c",
         "devinfoservice.h": "c",
         "hal_mcu.h": "c",
-        "iocc2541.h": "c"
+        "iocc2541.h": "c",
+        "osal_nv.h": "c",
+        "gapbondmgr.h": "c"
     }
 }
