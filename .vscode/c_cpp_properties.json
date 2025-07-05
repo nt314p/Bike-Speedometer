@@ -21,6 +21,8 @@
                 "__interrupt=",
                 "__near_func=",
                 "__xdata=",
+                "__intrinsic=",
+                "__nounwind=",
                 "@="
             ],
             "cStandard": "c17",

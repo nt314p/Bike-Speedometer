@@ -37,6 +37,8 @@
         "hal_mcu.h": "c",
         "iocc2541.h": "c",
         "osal_nv.h": "c",
-        "gapbondmgr.h": "c"
+        "gapbondmgr.h": "c",
+        "linkdb.h": "c",
+        "string.h": "c"
     }
 }

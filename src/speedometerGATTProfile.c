@@ -1,5 +1,4 @@
-#include <string.h>
-
+#include "hal_types.h"
 #include "bcomdef.h"
 #include "OSAL.h"
 #include "linkdb.h"
@@ -8,8 +7,9 @@
 #include "gatt_uuid.h"
 #include "gattservapp.h"
 #include "gapbondmgr.h"
-
 #include "speedometerGATTProfile.h"
+
+#include <string.h>
 
 // Speedometer profile service UUID: 0xFFF0
 CONST uint8 speedometerProfileServiceUUID[ATT_BT_UUID_SIZE] =
